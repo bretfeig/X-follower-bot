@@ -58,29 +58,52 @@
       'x-csrf-token': ct0 || '',
       'x-twitter-active-user': 'yes',
       'x-twitter-auth-type': 'OAuth2Session',
+      'x-twitter-client-language': navigator.language || 'en',
     };
   }
 
-  async function resolveUserId(username) {
+  async function resolveUserIdViaShow(username) {
     const url = `${ORIGIN}/i/api/1.1/users/show.json?screen_name=${encodeURIComponent(username)}`;
-    const res = await fetch(url, {
-      method: 'GET',
-      credentials: 'include',
-      headers: headersCommon(),
-    });
+    const res = await fetch(url, { method: 'GET', credentials: 'include', headers: headersCommon() });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`resolve ${username} failed ${res.status} ${text.slice(0, 120)}`);
+      return { ok: false, status: res.status, body: text.slice(0, 240) };
     }
     const data = await res.json();
     const id = data && (data.id_str || data.id);
-    if (!id) throw new Error(`resolve ${username} returned no id`);
-    return String(id);
+    if (!id) return { ok: false, status: 200, body: 'no id in response' };
+    return { ok: true, id: String(id) };
   }
 
-  async function followUserId(userId) {
+  async function resolveUserIdViaLookup(username) {
+    const url = `${ORIGIN}/i/api/1.1/users/lookup.json?screen_name=${encodeURIComponent(username)}`;
+    const res = await fetch(url, { method: 'GET', credentials: 'include', headers: headersCommon() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, status: res.status, body: text.slice(0, 240) };
+    }
+    const data = await res.json().catch(() => null);
+    const first = Array.isArray(data) && data.length ? data[0] : null;
+    const id = first && (first.id_str || first.id);
+    if (!id) return { ok: false, status: 200, body: 'no id in array' };
+    return { ok: true, id: String(id) };
+  }
+
+  async function resolveUser(username) {
+    // Try /users/show first
+    let r = await resolveUserIdViaShow(username);
+    if (r.ok) return { id: r.id, screen_name: username, method: 'show' };
+    emitStatus({ phase: 'resolve_fallback', username, hint: 'show_failed', status: r.status, body: r.body });
+    // Fallback to /users/lookup
+    r = await resolveUserIdViaLookup(username);
+    if (r.ok) return { id: r.id, screen_name: username, method: 'lookup' };
+    emitStatus({ phase: 'resolve_fallback', username, hint: 'lookup_failed', status: r.status, body: r.body });
+    return null;
+  }
+
+  async function followUser(target) {
     const url = `${ORIGIN}/i/api/1.1/friendships/create.json`;
-    const body = new URLSearchParams({
+    const params = {
       include_profile_interstitial_type: '1',
       include_blocking: '1',
       include_blocked_by: '1',
@@ -93,8 +116,10 @@
       include_ext_verified_type: '1',
       include_ext_profile_image_shape: '1',
       skip_status: '1',
-      user_id: userId,
-    }).toString();
+    };
+    if (target && target.id) params.user_id = String(target.id);
+    else if (target && target.screen_name) params.screen_name = String(target.screen_name);
+    const body = new URLSearchParams(params).toString();
     const res = await fetch(url, {
       method: 'POST',
       credentials: 'include',
@@ -129,39 +154,75 @@
       if (state.stopFlag) break;
       const username = usernames[i];
       const index = i + 1;
-      emitStatus({ phase: 'resolving', username, index, total, succeeded, failed, processed });
-      let userId;
-      try {
-        userId = await resolveUserId(username);
-      } catch (e) {
-        failed += 1;
-        processed += 1;
-        emitStatus({ phase: 'resolve_error', username, index, total, error: String(e), succeeded, failed, processed });
-        await sleep(politeDelay(4000));
-        continue;
-      }
-
-      if (state.stopFlag) break;
-      emitStatus({ phase: 'following', username, index, total, userId, succeeded, failed, processed });
-      const result = await followUserId(userId);
+      // First, attempt to follow directly by screen_name (web endpoint supports this)
+      emitStatus({ phase: 'following', username, index, total, userId: undefined, succeeded, failed, processed, note: 'direct_by_screen_name' });
+      let target = { screen_name: username };
+      let result = await followUser(target);
       if (result.rateLimited) {
         emitStatus({ phase: 'rate_limited', username, index, total, waitMs: result.waitMs, succeeded, failed, processed });
         await sleep(result.waitMs);
         // try follow again after wait
-        const retry = await followUserId(userId);
+        const retry = await followUser(target);
         if (!retry.ok) {
-          failed += 1;
-          processed += 1;
-          emitStatus({ phase: 'follow_error', username, index, total, status: retry.status, body: retry.body, succeeded, failed, processed });
+          // Fallback to resolving user id then retry
+          emitStatus({ phase: 'resolving', username, index, total, succeeded, failed, processed, note: 'fallback_after_rate_limit_retry_failed' });
+          try {
+            const resolved = await resolveUser(username);
+            if (resolved) {
+              target = resolved;
+              const retry2 = await followUser(target);
+              if (!retry2.ok) {
+                failed += 1;
+                processed += 1;
+                emitStatus({ phase: 'follow_error', username, index, total, status: retry2.status, body: retry2.body, succeeded, failed, processed });
+              } else {
+                succeeded += 1;
+                processed += 1;
+                emitStatus({ phase: 'followed', username, index, total, succeeded, failed, processed });
+              }
+            } else {
+              failed += 1;
+              processed += 1;
+              emitStatus({ phase: 'resolve_error', username, index, total, error: 'resolution returned null', succeeded, failed, processed });
+            }
+          } catch (e) {
+            failed += 1;
+            processed += 1;
+            emitStatus({ phase: 'resolve_error', username, index, total, error: String(e), succeeded, failed, processed });
+          }
         } else {
           succeeded += 1;
           processed += 1;
           emitStatus({ phase: 'followed', username, index, total, succeeded, failed, processed });
         }
       } else if (!result.ok) {
-        failed += 1;
-        processed += 1;
-        emitStatus({ phase: 'follow_error', username, index, total, status: result.status, body: result.body, succeeded, failed, processed });
+        // Try to resolve user id and follow again
+        emitStatus({ phase: 'resolving', username, index, total, succeeded, failed, processed, note: 'fallback_after_direct_failed' });
+        try {
+          const resolved = await resolveUser(username);
+          if (!resolved) {
+            failed += 1;
+            processed += 1;
+            emitStatus({ phase: 'resolve_error', username, index, total, error: 'resolution returned null', succeeded, failed, processed });
+          } else {
+            target = resolved;
+            emitStatus({ phase: 'following', username, index, total, userId: target.id, succeeded, failed, processed, note: 'by_id_after_resolve' });
+            const res2 = await followUser(target);
+            if (!res2.ok) {
+              failed += 1;
+              processed += 1;
+              emitStatus({ phase: 'follow_error', username, index, total, status: res2.status, body: res2.body, succeeded, failed, processed });
+            } else {
+              succeeded += 1;
+              processed += 1;
+              emitStatus({ phase: 'followed', username, index, total, succeeded, failed, processed });
+            }
+          }
+        } catch (e) {
+          failed += 1;
+          processed += 1;
+          emitStatus({ phase: 'resolve_error', username, index, total, error: String(e), succeeded, failed, processed });
+        }
       } else {
         succeeded += 1;
         processed += 1;
