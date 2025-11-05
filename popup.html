@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>X Batch Follow</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 12px; width: 320px; }
+      textarea { width: 100%; height: 140px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .row { display: flex; gap: 8px; margin-top: 8px; }
+      button { flex: 1; padding: 8px; cursor: pointer; }
+      .status { margin-top: 8px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h3>Batch Follow</h3>
+    <label for="usernames">Usernames (one per line, with or without @):</label>
+    <textarea id="usernames" placeholder="elonmusk
+naval
+@openai"></textarea>
+    <div class="row">
+      <button id="start">Start</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div class="metrics" style="display:flex;gap:12px;margin-top:8px;font-size:12px;">
+      <div>Processed <span id="processed">0</span>/<span id="total">0</span></div>
+      <div>Success <span id="succeeded">0</span></div>
+      <div>Failed <span id="failed">0</span></div>
+    </div>
+    <div class="progress" style="background:#eee;height:8px;border-radius:4px;overflow:hidden;margin-top:6px;">
+      <div id="bar" style="background:#1d9bf0;height:100%;width:0%;transition:width .2s ease;"></div>
+    </div>
+    <div class="status" id="status" style="margin-top:6px;">Idle.</div>
+    <div class="failures" style="margin-top:8px;">
+      <strong style="font-size:12px;">Failures</strong>
+      <ul id="failList" style="font-size:12px;max-height:120px;overflow:auto;margin:4px 0 0 16px;"></ul>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+  </html>

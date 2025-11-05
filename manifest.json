@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "X Batch Follow (Local)",
+  "version": "0.1.0",
+  "description": "Batch-follow a list of X (Twitter) usernames with polite pacing from your existing logged-in session.",
+  "action": {
+    "default_title": "Batch Follow",
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://x.com/*", "https://twitter.com/*"]
+    }
+  ]
+}
+
