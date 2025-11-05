@@ -31,6 +31,8 @@ const ui = {
   failed: document.getElementById('failed'),
   bar: document.getElementById('bar'),
   failList: document.getElementById('failList'),
+  pacing: document.getElementById('pacing'),
+  aggressive: document.getElementById('aggressive'),
 };
 
 const state = { total: 0, processed: 0, succeeded: 0, failed: 0, failures: [] };
@@ -66,9 +68,12 @@ document.getElementById('start').addEventListener('click', async () => {
     updateStatus('Provide at least one username.');
     return;
   }
+  const pacingPreset = (ui.pacing && ui.pacing.value) || 'normal';
+  const aggressive = !!(ui.aggressive && ui.aggressive.checked);
+  const settings = buildPacingSettings(pacingPreset, aggressive);
   try {
     const tabId = await getActiveXTab();
-    await chrome.tabs.sendMessage(tabId, { type: 'START', usernames });
+    await chrome.tabs.sendMessage(tabId, { type: 'START', usernames, settings });
     resetProgress(usernames.length);
     updateStatus(`Sent ${usernames.length} usernames…`);
   } catch (e) {
@@ -85,6 +90,21 @@ document.getElementById('stop').addEventListener('click', async () => {
     updateStatus(String(e.message || e));
   }
 });
+
+function buildPacingSettings(preset, aggressive) {
+  // Defaults
+  let baseMs = 2000, jitterRatio = 0.5, longTailProb = 0.05, longTailMinMs = 5000, longTailMaxMs = 12000;
+  if (preset === 'safe') {
+    baseMs = 3000; jitterRatio = 0.5; longTailProb = 0.07;
+  } else if (preset === 'fast') {
+    baseMs = 1200; jitterRatio = 0.3; longTailProb = 0.03; longTailMinMs = 3000; longTailMaxMs = 9000;
+  }
+  if (aggressive) {
+    jitterRatio = Math.min(jitterRatio, 0.2);
+    longTailProb = 0.0;
+  }
+  return { baseMs, jitterRatio, longTailProb, longTailMinMs, longTailMaxMs };
+}
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || msg.__x_bf !== true || msg.kind !== 'STATUS') return;

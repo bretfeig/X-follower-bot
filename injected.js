@@ -15,6 +15,7 @@
     running: false,
     stopFlag: false,
     current: null,
+    pacing: { baseMs: 2000, jitterRatio: 0.5, longTailProb: 0.05, longTailMinMs: 5000, longTailMaxMs: 12000 },
   };
 
   function emitStatus(obj) {
@@ -34,10 +35,14 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  function politeDelay(baseMs = 3000) {
-    // 1.5x jitter around base, occasional long tail
-    const jitter = randInt(-Math.floor(baseMs * 0.5), Math.floor(baseMs * 0.5));
-    const longTail = Math.random() < 0.07 ? randInt(5000, 12000) : 0; // ~7% longer pause
+  function politeDelay(baseMs = state.pacing.baseMs) {
+    const p = state.pacing || {};
+    const jr = typeof p.jitterRatio === 'number' ? p.jitterRatio : 0.5;
+    const ltP = typeof p.longTailProb === 'number' ? p.longTailProb : 0.05;
+    const ltMin = typeof p.longTailMinMs === 'number' ? p.longTailMinMs : 5000;
+    const ltMax = typeof p.longTailMaxMs === 'number' ? p.longTailMaxMs : 12000;
+    const jitter = randInt(-Math.floor(baseMs * jr), Math.floor(baseMs * jr));
+    const longTail = Math.random() < ltP ? randInt(ltMin, ltMax) : 0;
     return baseMs + jitter + longTail;
   }
 
@@ -98,6 +103,14 @@
     r = await resolveUserIdViaLookup(username);
     if (r.ok) return { id: r.id, screen_name: username, method: 'lookup' };
     emitStatus({ phase: 'resolve_fallback', username, hint: 'lookup_failed', status: r.status, body: r.body });
+    // Try GraphQL if path discovered
+    r = await resolveUserIdViaGraphQL(username);
+    if (r.ok) return { id: r.id, screen_name: username, method: 'graphql' };
+    emitStatus({ phase: 'resolve_fallback', username, hint: 'graphql_failed', status: r.status, body: r.body });
+    // Last resort: profile HTML scrape
+    r = await resolveUserIdViaProfileHtml(username);
+    if (r.ok) return { id: r.id, screen_name: username, method: 'html' };
+    emitStatus({ phase: 'resolve_fallback', username, hint: 'html_failed', status: r.status, body: r.body });
     return null;
   }
 
@@ -247,6 +260,9 @@
         return;
       }
       const usernames = sanitizeUsernames(Array.isArray(msg.usernames) ? msg.usernames : []);
+      if (msg.settings && typeof msg.settings === 'object') {
+        state.pacing = Object.assign({}, state.pacing, msg.settings);
+      }
       if (!usernames.length) {
         emitStatus({ phase: 'empty_list' });
         return;
@@ -259,3 +275,61 @@
     }
   });
 })();
+  // GraphQL discovery (non-invasive): capture seen /i/api/graphql/* endpoints
+  const discovery = { userByScreenNamePath: null };
+  try {
+    const origFetch = window.fetch;
+    window.fetch = function(resource, init) {
+      const res = origFetch.apply(this, arguments);
+      try {
+        res.then((r) => {
+          const url = (typeof resource === 'string') ? resource : (resource && resource.url) || '';
+          if (url.includes('/i/api/graphql/') && url.includes('/UserByScreenName')) {
+            try {
+              const u = new URL(url);
+              discovery.userByScreenNamePath = u.pathname; // /i/api/graphql/<id>/UserByScreenName
+            } catch { /* ignore */ }
+          }
+          return r;
+        }).catch(() => {});
+      } catch { /* ignore */ }
+      return res;
+    };
+  } catch { /* ignore */ }
+
+  async function resolveUserIdViaGraphQL(username) {
+    if (!discovery.userByScreenNamePath) return { ok: false, status: 0, body: 'no gql path discovered' };
+    const variables = {
+      screen_name: username,
+      withSafetyModeUserFields: true,
+      withHighlightedLabel: true,
+    };
+    const url = `${ORIGIN}${discovery.userByScreenNamePath}?variables=${encodeURIComponent(JSON.stringify(variables))}`;
+    const res = await fetch(url, { method: 'GET', credentials: 'include', headers: headersCommon() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, status: res.status, body: text.slice(0, 240) };
+    }
+    const data = await res.json().catch(() => null);
+    const id = data && data.data && data.data.user && data.data.user.result && (data.data.user.result.rest_id || data.data.user.result.legacy && data.data.user.result.legacy.id_str);
+    if (!id) return { ok: false, status: 200, body: 'no rest_id in gql' };
+    return { ok: true, id: String(id) };
+  }
+
+  async function resolveUserIdViaProfileHtml(username) {
+    const url = `${ORIGIN}/${encodeURIComponent(username)}`;
+    const res = await fetch(url, { method: 'GET', credentials: 'include', headers: { 'accept': 'text/html,*/*' } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, status: res.status, body: text.slice(0, 240) };
+    }
+    const html = await res.text();
+    // Try to find a rest_id near the screen_name occurrence or any rest_id
+    let m = html.match(/\"rest_id\":\"(\d{3,})\"/);
+    if (!m) {
+      // Alternate embedding
+      m = html.match(/\"id_str\":\"(\d{3,})\"/);
+    }
+    if (!m) return { ok: false, status: 200, body: 'no rest_id in html' };
+    return { ok: true, id: String(m[1]) };
+  }

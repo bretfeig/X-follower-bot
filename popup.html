@@ -17,6 +17,18 @@
     <textarea id="usernames" placeholder="elonmusk
 naval
 @openai"></textarea>
+    <div class="row" style="align-items:center">
+      <label for="pacing" style="min-width:80px">Pacing</label>
+      <select id="pacing" style="flex:1">
+        <option value="safe">Safe (~3s)</option>
+        <option value="normal" selected>Normal (~2s)</option>
+        <option value="fast">Fast (~1.2s)</option>
+      </select>
+    </div>
+    <div class="row" style="align-items:center">
+      <label for="aggressive" style="min-width:80px">Aggressive</label>
+      <input type="checkbox" id="aggressive" />
+    </div>
     <div class="row">
       <button id="start">Start</button>
       <button id="stop">Stop</button>
